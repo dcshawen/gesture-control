@@ -4,6 +4,22 @@ import time
 import math
 import urllib.request
 import pyautogui
+import ctypes
+
+# ==============================================================================
+# CONFIGURATION OPTIONS
+# ==============================================================================
+SMOOTHING_FACTOR = 0.15  # Cursor smoothing: Lower is smoother but adds more lag (0.0 to 1.0)
+SENSITIVITY = 1.75       # Cursor tracking sensitivity
+Y_OFFSET = 0.2           # Vertical offset for pointing coordinate mapping
+DEADZONE = 0.05          # Normalized distance (0.0 to 1.0) of movement required to break deadzone
+# ==============================================================================
+
+# Make the process DPI aware to get true multi-monitor resolution
+try:
+    ctypes.windll.user32.SetProcessDPIAware()
+except AttributeError:
+    pass
 
 # Adjust pyautogui settings for smoother tracking
 pyautogui.FAILSAFE = False
@@ -31,14 +47,9 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 # Keep track of the last detected gesture to avoid spamming the console
 last_gesture = None
 
-# Variables for cursor smoothing (Exponential Moving Average)
+# Variables for cursor smoothing state
 smoothed_x = None
 smoothed_y = None
-SMOOTHING_FACTOR = 0.15  # Lower is smoother but adds more lag (0.0 to 1.0)
-
-# Cursor tracking calibration
-SENSITIVITY = 2.5      
-Y_OFFSET = 0.2
 
 # Track mouse button click state
 is_clicking = False
@@ -53,14 +64,16 @@ def on_open_palm():
 def on_closed_palm():
     print("Action triggered: Closed Palm")
 
-def on_ok_sign():
-    print("Action triggered: OK Sign")
-
 def on_pointing(x_norm, y_norm):
     global smoothed_x, smoothed_y
     
-    # Retrieve screen dimensions
-    screen_w, screen_h = pyautogui.size()
+    # Retrieve the full virtual screen bounding box across all connected monitors
+    # This native Windows API considers primary monitor position (0,0), DPI, and relative secondary monitor layouts.
+    user32 = ctypes.windll.user32
+    v_x = user32.GetSystemMetrics(76) # SM_XVIRTUALSCREEN
+    v_y = user32.GetSystemMetrics(77) # SM_YVIRTUALSCREEN
+    v_w = user32.GetSystemMetrics(78) # SM_CXVIRTUALSCREEN
+    v_h = user32.GetSystemMetrics(79) # SM_CYVIRTUALSCREEN
     
     # Apply sensitivity and vertical offset
     # First, center coordinates around 0.5 (the middle of the camera feed)
@@ -68,37 +81,68 @@ def on_pointing(x_norm, y_norm):
     centered_x = (1.0 - x_norm) - 0.5
     centered_y = (y_norm - Y_OFFSET) - 0.5
     
-    # Multiply by sensitivity, then shift back to a 0.0-1.0 range mapped to screen pixels
-    target_x = (centered_x * SENSITIVITY + 0.5) * screen_w
-    target_y = (centered_y * SENSITIVITY + 0.5) * screen_h
+    # Multiply by sensitivity to get normalized target coordinates.
+    # The camera's normalized space (0.0 to 1.0) is spanned across the entire multi-monitor setup.
+    target_x_norm = centered_x * SENSITIVITY + 0.5
+    target_y_norm = centered_y * SENSITIVITY + 0.5
     
-    # Clamp coordinates to keep the cursor from crashing PyAutoGUI when going off-screen
-    target_x = max(0, min(screen_w, target_x))
-    target_y = max(0, min(screen_h, target_y))
-    
-    # Apply Exponential Moving Average (EMA) smoothing
+    # Apply Exponential Moving Average (EMA) smoothing and Deadzone on the normalized coordinates
     if smoothed_x is None or smoothed_y is None:
-        smoothed_x = target_x
-        smoothed_y = target_y
+        smoothed_x = target_x_norm
+        smoothed_y = target_y_norm
+        
+        target_x_px = v_x + smoothed_x * v_w
+        target_y_px = v_y + smoothed_y * v_h
+        
+        # Clamp coordinates
+        target_x_px = max(v_x, min(v_x + v_w - 1, target_x_px))
+        target_y_px = max(v_y, min(v_y + v_h - 1, target_y_px))
+        
+        pyautogui.moveTo(int(target_x_px), int(target_y_px))
     else:
-        smoothed_x = (smoothed_x * (1 - SMOOTHING_FACTOR)) + (target_x * SMOOTHING_FACTOR)
-        smoothed_y = (smoothed_y * (1 - SMOOTHING_FACTOR)) + (target_y * SMOOTHING_FACTOR)
-    
-    # Move the cursor
-    pyautogui.moveTo(int(smoothed_x), int(smoothed_y))
+        # Calculate raw distance in normalized space
+        dist = math.sqrt((target_x_norm - smoothed_x)**2 + (target_y_norm - smoothed_y)**2)
+        
+        # Only update the mouse if the new position is outside the DEADZONE
+        if dist > DEADZONE:
+            scale = min((dist - DEADZONE) / DEADZONE, 1.0)
+            adjusted_smoothing = SMOOTHING_FACTOR * scale
+            
+            smoothed_x = (smoothed_x * (1 - adjusted_smoothing)) + (target_x_norm * adjusted_smoothing)
+            smoothed_y = (smoothed_y * (1 - adjusted_smoothing)) + (target_y_norm * adjusted_smoothing)
+            
+            target_x_px = v_x + smoothed_x * v_w
+            target_y_px = v_y + smoothed_y * v_h
+            
+            # Clamp coordinates to keep the cursor within the virtual screen boundary
+            target_x_px = max(v_x, min(v_x + v_w - 1, target_x_px))
+            target_y_px = max(v_y, min(v_y + v_h - 1, target_y_px))
+            
+            pyautogui.moveTo(int(target_x_px), int(target_y_px))
+            
+            # Re-sync internal tracker with actual OS cursor position to prevent getting stuck in dead space.
+            real_x, real_y = pyautogui.position()
+            
+            # Map back to normalized coordinates to keep the math consistent regardless of resolution
+            smoothed_x = (real_x - v_x) / v_w
+            smoothed_y = (real_y - v_y) / v_h
 
 def print_gesture(result, output_image, timestamp_ms):
     global last_gesture, smoothed_x, smoothed_y, is_clicking
     
     display_name = None
     track_index_tip = None
-    has_fist = False
-    fist_hand_index = -1
-    pointing_hand_index = -1
+    has_left_fist = False
+    is_right_pointing = False
 
-    if result.hand_landmarks:
+    if result.hand_landmarks and result.handedness:
         # Loop through all detected hands to identify states
         for index, landmarks in enumerate(result.hand_landmarks):
+            # Assign handedness based on MediaPipe's classification
+            handedness_label = result.handedness[index][0].category_name
+            is_right_hand = (handedness_label == 'Right')
+            is_left_hand = (handedness_label == 'Left')
+            
             current_hand_gesture = None
             
             # Read predefined gesture if available for this specific hand
@@ -108,8 +152,8 @@ def print_gesture(result, output_image, timestamp_ms):
                     current_hand_gesture = 'Open Palm'
                 elif category == 'Closed_Fist':
                     current_hand_gesture = 'Closed Palm'
-                    has_fist = True
-                    fist_hand_index = index
+                    if is_left_hand:
+                        has_left_fist = True
 
             # Extract necessary landmarks
             thumb_tip = landmarks[4]
@@ -123,24 +167,20 @@ def print_gesture(result, output_image, timestamp_ms):
             pinky_tip = landmarks[20]
             pinky_mcp = landmarks[17]
 
-            thumb_index_distance = get_distance(thumb_tip, index_tip)
-            middle_extended = get_distance(middle_tip, wrist) > get_distance(middle_mcp, wrist)
+            # Check if this hand is pointing (Only allow RIGHT hand to point)
+            if is_right_hand:
+                # We verify the index finger is physically extended (tip is further from wrist than the knuckle)
+                is_index_extended = get_distance(index_tip, wrist) > get_distance(index_mcp, wrist)
+                is_index_forward = index_tip.z < -0.05 and index_tip.z < index_mcp.z
+                is_middle_folded = get_distance(middle_tip, wrist) < get_distance(middle_mcp, wrist)
+                is_ring_folded = get_distance(ring_tip, wrist) < get_distance(ring_mcp, wrist)
+                is_pinky_folded = get_distance(pinky_tip, wrist) < get_distance(pinky_mcp, wrist)
 
-            if thumb_index_distance < 0.05 and middle_extended:
-                current_hand_gesture = 'OK Sign'
-
-            # Check if this hand is pointing
-            is_index_forward = index_tip.z < -0.05 and index_tip.z < index_mcp.z
-            is_middle_folded = get_distance(middle_tip, wrist) < get_distance(middle_mcp, wrist)
-            is_ring_folded = get_distance(ring_tip, wrist) < get_distance(ring_mcp, wrist)
-            is_pinky_folded = get_distance(pinky_tip, wrist) < get_distance(pinky_mcp, wrist)
-
-            if is_index_forward and is_middle_folded and is_ring_folded and is_pinky_folded:
-                # Only allow the first detected pointing hand to control the cursor
-                if pointing_hand_index == -1:
+                # Prevent a recognized closed fist from accidentally being misclassified as pointing
+                if current_hand_gesture != 'Closed Palm' and is_index_extended and is_index_forward and is_middle_folded and is_ring_folded and is_pinky_folded:
                     current_hand_gesture = 'Pointing'
                     track_index_tip = index_tip
-                    pointing_hand_index = index
+                    is_right_pointing = True
                 
             # If we don't have a primary display name yet or we found pointing (which is highest priority), update it
             if current_hand_gesture == 'Pointing':
@@ -149,17 +189,15 @@ def print_gesture(result, output_image, timestamp_ms):
                 display_name = current_hand_gesture
 
     # Process Cursor Movement
-    if display_name == 'Pointing' and track_index_tip:
+    if is_right_pointing and track_index_tip:
         on_pointing(track_index_tip.x, track_index_tip.y)
         
-        # Process Mouse Click logic: Ensure fist is from a DIFFERENT hand than the pointing hand
-        valid_fist_click = has_fist and (fist_hand_index != pointing_hand_index) and (fist_hand_index != -1)
-
-        if valid_fist_click and not is_clicking:
+        # Process Mouse Click logic: Ensure left hand is a fist while tracking right hand
+        if has_left_fist and not is_clicking:
             pyautogui.click()
             is_clicking = True
-            print("Action triggered: Left Click")
-        elif not valid_fist_click and is_clicking:
+            print("Action triggered: Left Click (Left Hand Fist)")
+        elif not has_left_fist and is_clicking:
             is_clicking = False
             
     else:
@@ -173,8 +211,6 @@ def print_gesture(result, output_image, timestamp_ms):
             on_open_palm()
         elif display_name == 'Closed Palm':
             on_closed_palm()
-        elif display_name == 'OK Sign':
-            on_ok_sign()
         elif display_name == 'Pointing':
             print("Action triggered: Pointing (Cursor Tracking)")
             
