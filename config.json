@@ -1,0 +1,7 @@
+{
+    "SMOOTHING_FACTOR": 0.5,
+    "SENSITIVITY": 1.5,
+    "Y_OFFSET": 0.2,
+    "DEADZONE": 0.05,
+    "COMMAND_COOLDOWN": 1.0
+}
