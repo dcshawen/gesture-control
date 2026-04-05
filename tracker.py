@@ -15,10 +15,11 @@ SENSITIVITY = 2.5				 # Cursor tracking sensitivity (multiplier for how much han
 Y_OFFSET = 0.2           # Vertical offset for pointing coordinate mapping (0.0 to 1.0, where 0.0 is no offset and 1.0 is a full screen height offset)
 DEADZONE = 0.05          # Normalized distance (0.0 to 1.0) of movement required to break deadzone
 COMMAND_COOLDOWN = 1.0   # Cooldown between operations
+SCROLLING_SENSITIVITY = 0.75 # Sensitivity multiplier for scrolling amount
 # ==============================================================================
 
 def reload_config():
-    global SMOOTHING_FACTOR, SENSITIVITY, Y_OFFSET, DEADZONE, COMMAND_COOLDOWN
+    global SMOOTHING_FACTOR, SENSITIVITY, Y_OFFSET, DEADZONE, COMMAND_COOLDOWN, SCROLLING_SENSITIVITY
     try:
         with open('config.json', 'r') as f:
             config = json.load(f)
@@ -27,6 +28,7 @@ def reload_config():
             Y_OFFSET = config.get("Y_OFFSET", Y_OFFSET)
             DEADZONE = config.get("DEADZONE", DEADZONE)
             COMMAND_COOLDOWN = config.get("COMMAND_COOLDOWN", COMMAND_COOLDOWN)
+            SCROLLING_SENSITIVITY = config.get("SCROLLING_SENSITIVITY", SCROLLING_SENSITIVITY)
     except Exception as e:
         pass # Ignore errors on read (e.g. file lock during write)
 
@@ -79,6 +81,11 @@ last_dictation_toggled_time = 0
 
 # Track navigation state
 last_nav_command_time = 0
+
+# Track scrolling state
+is_scrolling = False
+scroll_anchor_x = None
+scroll_anchor_y = None
 
 def get_distance(p1, p2):
     return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
@@ -166,14 +173,16 @@ def on_pointing(mcp, tip):
             smoothed_y = (real_y - v_y) / v_h
 
 def print_gesture(result, output_image, timestamp_ms):
-    global last_gesture, smoothed_x, smoothed_y, is_clicking, is_dictating, is_pressing_enter, last_dictation_detected_time, last_dictation_toggled_time, last_nav_command_time
+    global last_gesture, smoothed_x, smoothed_y, is_clicking, is_dictating, is_pressing_enter, last_dictation_detected_time, last_dictation_toggled_time, last_nav_command_time, is_scrolling, scroll_anchor_x, scroll_anchor_y
     
     display_name = None
     track_index_tip = None
     track_index_mcp = None
+    track_palm_center = None
     has_left_fist = False
     has_right_fist = False
     is_right_pointing = False
+    is_right_open_palm = False
     is_left_pointing_up = False
 
     if result.hand_landmarks and result.handedness:
@@ -226,6 +235,10 @@ def print_gesture(result, output_image, timestamp_ms):
                     track_index_tip = index_tip
                     track_index_mcp = index_mcp
                     is_right_pointing = True
+                elif current_hand_gesture == 'Open Palm':
+                    is_right_open_palm = True
+                    # Let's use landmark 9 (middle finger MCP) as a stable anchor for dragging the screen
+                    track_palm_center = middle_mcp
                     
             elif is_left_hand:
                 # Left hand uses "Pointing Up" for dictation
@@ -258,8 +271,66 @@ def print_gesture(result, output_image, timestamp_ms):
         elif not has_left_fist and is_clicking:
             is_clicking = False
             
+    elif is_right_open_palm and track_palm_center:
+        # Scrolling logic: Act like dragging a touchscreen
+        if not is_scrolling:
+            is_scrolling = True
+            scroll_anchor_x = track_palm_center.x
+            scroll_anchor_y = track_palm_center.y
+            print("Action triggered: Omni-directional Scrolling Started")
+        else:
+            delta_x = track_palm_center.x - scroll_anchor_x
+            delta_y = track_palm_center.y - scroll_anchor_y
+            
+            # Map physical movement back into touchscreen-style reversed scrolling
+            # The SCROLLING_SENSITIVITY from config controls the scroll speed,
+            # compounded with the baseline SENSITIVITY.
+            SCROLL_MULTIPLIER = 5000 * SENSITIVITY * SCROLLING_SENSITIVITY
+            
+            scroll_amount_y = int(-delta_y * SCROLL_MULTIPLIER)
+            scroll_amount_x = int(delta_x * SCROLL_MULTIPLIER)
+            
+            # Apply Vertical Scroll
+            # Implement sticky edges to prevent scroll bouncing when exiting at extremes
+            EDGE_MARGIN = 0.15
+            STICKY_THRESHOLD = 150 * SENSITIVITY * SCROLLING_SENSITIVITY
+            
+            threshold_y = 15
+            # Bottom edge (high y) and pulling up (negative delta_y)
+            if track_palm_center.y > (1.0 - EDGE_MARGIN) and delta_y < 0:
+                threshold_y = STICKY_THRESHOLD
+            # Top edge (low y) and pulling down (positive delta_y)
+            elif track_palm_center.y < EDGE_MARGIN and delta_y > 0:
+                threshold_y = STICKY_THRESHOLD
+                
+            threshold_x = 15
+            # Right image edge (high x) and pulling left (negative delta_x)
+            if track_palm_center.x > (1.0 - EDGE_MARGIN) and delta_x < 0:
+                threshold_x = STICKY_THRESHOLD
+            # Left image edge (low x) and pulling right (positive delta_x)
+            elif track_palm_center.x < EDGE_MARGIN and delta_x > 0:
+                threshold_x = STICKY_THRESHOLD
+
+            if abs(scroll_amount_y) > threshold_y:
+                pyautogui.scroll(scroll_amount_y)
+                # We update the anchor by the portion we actually "consumed" as scroll
+                scroll_anchor_y = track_palm_center.y
+                
+            # Apply Horizontal Scroll (Note: not all Windows applications support hscroll equally)
+            if abs(scroll_amount_x) > threshold_x:
+                try:
+                    pyautogui.hscroll(scroll_amount_x)
+                except Exception:
+                    pass
+                scroll_anchor_x = track_palm_center.x
+
+        if is_clicking:
+            is_clicking = False
     else:
-        # If we lost tracking or stopped pointing, reset click state
+        # If we lost tracking or stopped pointing/scrolling, reset relevant states
+        is_scrolling = False
+        scroll_anchor_x = None
+        scroll_anchor_y = None
         if is_clicking:
             is_clicking = False
 

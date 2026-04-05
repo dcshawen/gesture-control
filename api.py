@@ -9,7 +9,7 @@ app = FastAPI(title="MediaPipe Config API")
 # Allow React to communicate with the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to your React app's URL
+    allow_origins=["*"], # Dev only - in production, specify your frontend URL 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -23,6 +23,7 @@ class ConfigModel(BaseModel):
     Y_OFFSET: float
     DEADZONE: float
     COMMAND_COOLDOWN: float
+    SCROLLING_SENSITIVITY: float
 
 class SingleValueModel(BaseModel):
     value: float
@@ -85,3 +86,7 @@ def update_deadzone(data: SingleValueModel):
 @app.post("/config/command_cooldown")
 def update_command_cooldown(data: SingleValueModel):
     return update_single_config("COMMAND_COOLDOWN", data.value)
+
+@app.post("/config/scrolling_sensitivity")
+def update_scrolling_sensitivity(data: SingleValueModel):
+    return update_single_config("SCROLLING_SENSITIVITY", data.value)
