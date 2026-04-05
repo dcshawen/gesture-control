@@ -1,4 +1,4 @@
-# Spatial Mouse and Dictation Controller
+# Point and Click
 
 This application uses your webcam and Google's MediaPipe Machine Learning framework to create a completely hands-free spatial mouse and dictation controller. It runs headlessly (no UI) in the background and scales seamlessly across multi-monitor setups.
 
