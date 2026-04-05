@@ -29,20 +29,31 @@ It is highly recommended to run this application inside an isolated Python virtu
    *(Note: If you run into Execution Policy errors on Windows, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned` first).*
 4. **Install the required Python packages**:
    ```powershell
-   pip install mediapipe opencv-python pyautogui
+   pip install mediapipe opencv-python pyautogui fastapi uvicorn pydantic
    ```
 
 ## Running the Application
+
 Ensure your virtual environment is activated (you should see `(venv)` at the beginning of your terminal prompt).
 
-Run the application with:
+You can run both the background tracker and the configuration API simultaneously from a single terminal:
 ```powershell
 python main.py
 ```
+- **First Time Run**: It will automatically download the `gesture_recognizer.task` ML model from Google's servers and generate a `config.json` file.
+- **API Access**: The API will be available at http://localhost:8000. Interactive documentation is at http://localhost:8000/docs.
+- **Shutting Down**: Press `Ctrl + C` in the terminal to gracefully terminate both the webcam tracking feed and the API server at the same time.
 
-- **First Time Run**: It will automatically download the `gesture_recognizer.task` ML model from Google's servers. 
-- **Configuration Generation**: It will also generate a `config.json` file in the root directory.
-- **Shutting Down**: Press `Ctrl + C` in the terminal to terminate the webcam feed and exit.
+### Endpoints Provided via API:
+This API allows external apps (like your React frontend) to safely make programmatic changes to the `config.json` file on the fly (which the python tracker automatically detects and streams).
+
+- `GET /config` returns the current JSON.
+- `POST /config` overwrites the full JSON.
+- `POST /config/smoothing_factor` (Requires payload `{ "value": 0.5 }`)
+- `POST /config/sensitivity` 
+- `POST /config/y_offset` 
+- `POST /config/deadzone` 
+- `POST /config/command_cooldown` 
 
 ## Real-Time Configuration (`config.json`)
 Upon running, the script creates `config.json`. You can modify these physics and tracking variables on the fly. Whenever you hit `Save`, the active Python script will instantly update the tracking engine.
