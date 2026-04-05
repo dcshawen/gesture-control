@@ -16,10 +16,12 @@ Y_OFFSET = 0.2           # Vertical offset for pointing coordinate mapping (0.0 
 DEADZONE = 0.05          # Normalized distance (0.0 to 1.0) of movement required to break deadzone
 COMMAND_COOLDOWN = 1.0   # Cooldown between operations
 SCROLLING_SENSITIVITY = 0.75 # Sensitivity multiplier for scrolling amount
+EDGE_THRESHOLD = 0.15    # Margin at edge of camera view to invoke sticky scrolling (0.0 to 1.0)
+STICKY_THRESHOLD = 150.0 # Additional velocity/distance required to break scrolling anchor when at the edge
 # ==============================================================================
 
 def reload_config():
-    global SMOOTHING_FACTOR, SENSITIVITY, Y_OFFSET, DEADZONE, COMMAND_COOLDOWN, SCROLLING_SENSITIVITY
+    global SMOOTHING_FACTOR, SENSITIVITY, Y_OFFSET, DEADZONE, COMMAND_COOLDOWN, SCROLLING_SENSITIVITY, EDGE_THRESHOLD, STICKY_THRESHOLD
     try:
         with open('config.json', 'r') as f:
             config = json.load(f)
@@ -29,6 +31,8 @@ def reload_config():
             DEADZONE = config.get("DEADZONE", DEADZONE)
             COMMAND_COOLDOWN = config.get("COMMAND_COOLDOWN", COMMAND_COOLDOWN)
             SCROLLING_SENSITIVITY = config.get("SCROLLING_SENSITIVITY", SCROLLING_SENSITIVITY)
+            EDGE_THRESHOLD = config.get("EDGE_THRESHOLD", EDGE_THRESHOLD)
+            STICKY_THRESHOLD = config.get("STICKY_THRESHOLD", STICKY_THRESHOLD)
     except Exception as e:
         pass # Ignore errors on read (e.g. file lock during write)
 
@@ -88,7 +92,9 @@ scroll_anchor_x = None
 scroll_anchor_y = None
 
 def get_distance(p1, p2):
-    return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
+    z1 = getattr(p1, 'z', 0)
+    z2 = getattr(p2, 'z', 0)
+    return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (z1 - z2)**2)
 
 # Scaffolded methods for each gesture
 def on_open_palm():
@@ -210,35 +216,45 @@ def print_gesture(result, output_image, timestamp_ms):
             # Extract necessary landmarks
             thumb_tip = landmarks[4]
             index_tip = landmarks[8]
+            index_pip = landmarks[6]
             index_mcp = landmarks[5]
             wrist = landmarks[0]
             middle_tip = landmarks[12]
+            middle_pip = landmarks[10]
             middle_mcp = landmarks[9]
             ring_tip = landmarks[16]
+            ring_pip = landmarks[14]
             ring_mcp = landmarks[13]
             pinky_tip = landmarks[20]
+            pinky_pip = landmarks[18]
             pinky_mcp = landmarks[17]
 
             # Common finger fold states
-            is_index_extended = get_distance(index_tip, wrist) > get_distance(index_mcp, wrist)
-            is_middle_folded = get_distance(middle_tip, wrist) < get_distance(middle_mcp, wrist)
-            is_ring_folded = get_distance(ring_tip, wrist) < get_distance(ring_mcp, wrist)
-            is_pinky_folded = get_distance(pinky_tip, wrist) < get_distance(pinky_mcp, wrist)
+            # A finger is extended if its tip is further from the wrist than its PIP (middle) joint.
+            # A finger is folded if its tip is curled back, making it closer to the wrist than its PIP joint.
+            is_index_extended = get_distance(index_tip, wrist) > get_distance(index_pip, wrist)
+            is_middle_folded = get_distance(middle_tip, wrist) < get_distance(middle_pip, wrist)
+            is_ring_folded = get_distance(ring_tip, wrist) < get_distance(ring_pip, wrist)
+            is_pinky_folded = get_distance(pinky_tip, wrist) < get_distance(pinky_pip, wrist)
 
             # Check if this hand is pointing (Only allow RIGHT hand to point)
             if is_right_hand:
-                is_index_forward = index_tip.z < -0.05 and index_tip.z < index_mcp.z
-
+                # We removed the z-axis forward constraint to allow pointing down towards bottom monitors
+                
                 # Prevent a recognized closed fist from accidentally being misclassified as pointing
-                if current_hand_gesture != 'Closed Palm' and is_index_extended and is_index_forward and is_middle_folded and is_ring_folded and is_pinky_folded:
+                if current_hand_gesture != 'Closed Palm' and is_index_extended and is_middle_folded and is_ring_folded and is_pinky_folded:
                     current_hand_gesture = 'Pointing'
                     track_index_tip = index_tip
                     track_index_mcp = index_mcp
                     is_right_pointing = True
                 elif current_hand_gesture == 'Open Palm':
                     is_right_open_palm = True
-                    # Let's use landmark 9 (middle finger MCP) as a stable anchor for dragging the screen
-                    track_palm_center = middle_mcp
+                    # Use center of the palm (midpoint between wrist and middle finger MCP) as a stable anchor
+                    class PalmCenter:
+                        def __init__(self, x, y):
+                            self.x = x
+                            self.y = y
+                    track_palm_center = PalmCenter((wrist.x + middle_mcp.x) / 2.0, (wrist.y + middle_mcp.y) / 2.0)
                     
             elif is_left_hand:
                 # Left hand uses "Pointing Up" for dictation
@@ -292,24 +308,17 @@ def print_gesture(result, output_image, timestamp_ms):
             
             # Apply Vertical Scroll
             # Implement sticky edges to prevent scroll bouncing when exiting at extremes
-            EDGE_MARGIN = 0.15
-            STICKY_THRESHOLD = 150 * SENSITIVITY * SCROLLING_SENSITIVITY
+            scaled_sticky_threshold = STICKY_THRESHOLD * SENSITIVITY * SCROLLING_SENSITIVITY
             
             threshold_y = 15
-            # Bottom edge (high y) and pulling up (negative delta_y)
-            if track_palm_center.y > (1.0 - EDGE_MARGIN) and delta_y < 0:
-                threshold_y = STICKY_THRESHOLD
-            # Top edge (low y) and pulling down (positive delta_y)
-            elif track_palm_center.y < EDGE_MARGIN and delta_y > 0:
-                threshold_y = STICKY_THRESHOLD
+            # Apply sticky deadzone symmetrically when at the vertical edges to prevent ratcheting jitter
+            if track_palm_center.y > (1.0 - EDGE_THRESHOLD) or track_palm_center.y < EDGE_THRESHOLD:
+                threshold_y = scaled_sticky_threshold
                 
             threshold_x = 15
-            # Right image edge (high x) and pulling left (negative delta_x)
-            if track_palm_center.x > (1.0 - EDGE_MARGIN) and delta_x < 0:
-                threshold_x = STICKY_THRESHOLD
-            # Left image edge (low x) and pulling right (positive delta_x)
-            elif track_palm_center.x < EDGE_MARGIN and delta_x > 0:
-                threshold_x = STICKY_THRESHOLD
+            # Apply sticky deadzone symmetrically when at the horizontal edges
+            if track_palm_center.x > (1.0 - EDGE_THRESHOLD) or track_palm_center.x < EDGE_THRESHOLD:
+                threshold_x = scaled_sticky_threshold
 
             if abs(scroll_amount_y) > threshold_y:
                 pyautogui.scroll(scroll_amount_y)
