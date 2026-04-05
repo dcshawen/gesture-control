@@ -5,15 +5,30 @@ import math
 import urllib.request
 import pyautogui
 import ctypes
+import json
 
 # ==============================================================================
-# CONFIGURATION OPTIONS
+# CONFIGURATION OPTIONS (Defaults, dynamically overridden by config.json)
 # ==============================================================================
 SMOOTHING_FACTOR = 0.15  # Cursor smoothing: Lower is smoother but adds more lag (0.0 to 1.0)
 SENSITIVITY = 2.5				 # Cursor tracking sensitivity (multiplier for how much hand movement translates to cursor movement)
 Y_OFFSET = 0.2           # Vertical offset for pointing coordinate mapping (0.0 to 1.0, where 0.0 is no offset and 1.0 is a full screen height offset)
 DEADZONE = 0.05          # Normalized distance (0.0 to 1.0) of movement required to break deadzone
+COMMAND_COOLDOWN = 1.0   # Cooldown between operations
 # ==============================================================================
+
+def reload_config():
+    global SMOOTHING_FACTOR, SENSITIVITY, Y_OFFSET, DEADZONE, COMMAND_COOLDOWN
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+            SMOOTHING_FACTOR = config.get("SMOOTHING_FACTOR", SMOOTHING_FACTOR)
+            SENSITIVITY = config.get("SENSITIVITY", SENSITIVITY)
+            Y_OFFSET = config.get("Y_OFFSET", Y_OFFSET)
+            DEADZONE = config.get("DEADZONE", DEADZONE)
+            COMMAND_COOLDOWN = config.get("COMMAND_COOLDOWN", COMMAND_COOLDOWN)
+    except Exception as e:
+        pass # Ignore errors on read (e.g. file lock during write)
 
 # Make the process DPI aware to get true multi-monitor resolution
 try:
@@ -72,8 +87,18 @@ def on_open_palm():
 def on_closed_palm():
     print("Action triggered: Closed Palm")
 
-def on_pointing(x_norm, y_norm):
+def on_pointing(mcp, tip):
     global smoothed_x, smoothed_y
+    
+    # Calculate Directional Vector (Raycast) from Knuckle (mcp) to Fingertip (tip)
+    ray_dx = tip.x - mcp.x
+    ray_dy = tip.y - mcp.y
+    
+    # The new target coordinate is where the mathematical "laser" points.
+    # Instead of hardcoding a massive 4.0 multiplier, we let the SENSITIVITY from config.json govern this entirely.
+    # This restores 0.05 vs 2.5 logical scaling for the user sliders.
+    raw_x_norm = mcp.x + (ray_dx * SENSITIVITY)
+    raw_y_norm = mcp.y + (ray_dy * SENSITIVITY)
     
     # Retrieve the full virtual screen bounding box across all connected monitors
     # This native Windows API considers primary monitor position (0,0), DPI, and relative secondary monitor layouts.
@@ -83,16 +108,18 @@ def on_pointing(x_norm, y_norm):
     v_w = user32.GetSystemMetrics(78) # SM_CXVIRTUALSCREEN
     v_h = user32.GetSystemMetrics(79) # SM_CYVIRTUALSCREEN
     
+    # -------------------------------------------------------------------------
     # Apply sensitivity and vertical offset
     # First, center coordinates around 0.5 (the middle of the camera feed)
-    # We invert the X axis (1.0 - x) because webcams are mirrored by default
-    centered_x = (1.0 - x_norm) - 0.5
-    centered_y = (y_norm - Y_OFFSET) - 0.5
+    # We invert the X axis (1.0 - raw_x_norm) because webcams are mirrored by default
+    centered_x = 1.0 - raw_x_norm
+    centered_y = raw_y_norm
     
-    # Multiply by sensitivity to get normalized target coordinates.
-    # The camera's normalized space (0.0 to 1.0) is spanned across the entire multi-monitor setup.
-    target_x_norm = centered_x * SENSITIVITY + 0.5
-    target_y_norm = centered_y * SENSITIVITY + 0.5
+    # We now strictly map the sensitivity entirely by amplifying the calculated vector length
+    # instead of stacking multiple multipliers. 
+    # That means to hit corners faster, we just increase sensitivity.
+    target_x_norm = ((centered_x - 0.5) * SENSITIVITY) + 0.5
+    target_y_norm = ((centered_y - 0.5 - Y_OFFSET) * SENSITIVITY) + 0.5
     
     # Apply Exponential Moving Average (EMA) smoothing and Deadzone on the normalized coordinates
     if smoothed_x is None or smoothed_y is None:
@@ -140,6 +167,7 @@ def print_gesture(result, output_image, timestamp_ms):
     
     display_name = None
     track_index_tip = None
+    track_index_mcp = None
     has_left_fist = False
     has_right_fist = False
     is_right_pointing = False
@@ -193,6 +221,7 @@ def print_gesture(result, output_image, timestamp_ms):
                 if current_hand_gesture != 'Closed Palm' and is_index_extended and is_index_forward and is_middle_folded and is_ring_folded and is_pinky_folded:
                     current_hand_gesture = 'Pointing'
                     track_index_tip = index_tip
+                    track_index_mcp = index_mcp
                     is_right_pointing = True
                     
             elif is_left_hand:
@@ -216,7 +245,7 @@ def print_gesture(result, output_image, timestamp_ms):
 
     # Process Cursor Movement
     if is_right_pointing and track_index_tip:
-        on_pointing(track_index_tip.x, track_index_tip.y)
+        on_pointing(track_index_mcp, track_index_tip)
         
         # Process Mouse Click logic: Ensure left hand is a fist while tracking right hand
         if has_left_fist and not is_clicking:
@@ -292,6 +321,8 @@ options = GestureRecognizerOptions(
 )
 
 def main():
+    global is_dictating, last_dictation_detected_time, last_dictation_toggled_time
+    
     print("Starting webcam reader... (No UI will be shown. Press Ctrl+C in terminal to stop)")
     
     cap = cv2.VideoCapture(0)
@@ -301,8 +332,16 @@ def main():
         return
 
     timestamp = 0
+    last_config_check_time = 0
+    
     with GestureRecognizer.create_from_options(options) as recognizer:
         while True:
+            # Regularly check if config.json has been updated by the API
+            current_time = time.time()
+            if current_time - last_config_check_time > 1.0:
+                reload_config()
+                last_config_check_time = current_time
+                
             ret, frame = cap.read()
             if not ret:
                 print("Failed to grab frame")
@@ -318,6 +357,16 @@ def main():
             
             # Sleep briefly to reduce CPU load and allow callback to process
             time.sleep(0.03)
+            
+            # Redundancy check: Ensure dictation is deactivated if the hand is out of frame
+            current_time = time.time()
+            if is_dictating and (current_time - last_dictation_detected_time > 1.5):
+                # Only try to toggle off if we haven't recently tried
+                if (current_time - last_dictation_toggled_time > 2.0):
+                    is_dictating = False
+                    last_dictation_toggled_time = current_time
+                    print("Redundancy triggered: Dictation Stopped (Hand left view)")
+                    pyautogui.hotkey('win', 'h')
 
     cap.release()
 

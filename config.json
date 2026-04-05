@@ -1,6 +1,6 @@
 {
-    "SMOOTHING_FACTOR": 0.5,
-    "SENSITIVITY": 1.5,
+    "SMOOTHING_FACTOR": 0.8,
+    "SENSITIVITY": 0.8,
     "Y_OFFSET": 0.2,
     "DEADZONE": 0.05,
     "COMMAND_COOLDOWN": 1.0
