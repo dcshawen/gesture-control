@@ -57,6 +57,8 @@ This API allows external apps (like your React frontend) to safely make programm
 - `POST /config/deadzone` 
 - `POST /config/command_cooldown` 
 - `POST /config/scrolling_sensitivity`
+- `POST /config/edge_threshold`
+- `POST /config/sticky_threshold`
 
 ## Real-Time Configuration (`config.json`)
 Upon running, the script creates `config.json`. You can modify these physics and tracking variables on the fly. Whenever you hit `Save`, the active Python script will instantly update the tracking engine.
@@ -69,3 +71,5 @@ Upon running, the script creates `config.json`. You can modify these physics and
 | `DEADZONE` | Normalized scale (`0.0` to `1.0`) of the breakout zone. Your finger must translate outside this zone to snap the mathematical lock and move the cursor (prevents micro-shaking). |
 | `COMMAND_COOLDOWN` | Total seconds mandated between actions like Mouse Clicks and Enter keypresses to prevent accidental double/triple firing. Cursor tracking ignores this cooldown. |
 | `SCROLLING_SENSITIVITY` | Scale factor to adjust specifically how fast omni-directional scrolling occurs with an open palm. Defaults to `1.0`. |
+| `EDGE_THRESHOLD` | `0.0` to `1.0`. Margin at the edge of the camera view where "sticky scrolling" behavior is enforced to avoid bouncing. Defaults to `0.15` (15% margin). |
+| `STICKY_THRESHOLD` | Absolute velocity required to break the scroll anchor when moving backwards inside an edge threshold. Defaults to `150.0`. |

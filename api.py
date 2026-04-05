@@ -24,6 +24,8 @@ class ConfigModel(BaseModel):
     DEADZONE: float
     COMMAND_COOLDOWN: float
     SCROLLING_SENSITIVITY: float
+    EDGE_THRESHOLD: float
+    STICKY_THRESHOLD: float
 
 class SingleValueModel(BaseModel):
     value: float
@@ -90,3 +92,11 @@ def update_command_cooldown(data: SingleValueModel):
 @app.post("/config/scrolling_sensitivity")
 def update_scrolling_sensitivity(data: SingleValueModel):
     return update_single_config("SCROLLING_SENSITIVITY", data.value)
+
+@app.post("/config/edge_threshold")
+def update_edge_threshold(data: SingleValueModel):
+    return update_single_config("EDGE_THRESHOLD", data.value)
+
+@app.post("/config/sticky_threshold")
+def update_sticky_threshold(data: SingleValueModel):
+    return update_single_config("STICKY_THRESHOLD", data.value)
