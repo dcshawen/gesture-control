@@ -10,8 +10,8 @@ import ctypes
 # CONFIGURATION OPTIONS
 # ==============================================================================
 SMOOTHING_FACTOR = 0.15  # Cursor smoothing: Lower is smoother but adds more lag (0.0 to 1.0)
-SENSITIVITY = 1.75       # Cursor tracking sensitivity
-Y_OFFSET = 0.2           # Vertical offset for pointing coordinate mapping
+SENSITIVITY = 2.5				 # Cursor tracking sensitivity (multiplier for how much hand movement translates to cursor movement)
+Y_OFFSET = 0.2           # Vertical offset for pointing coordinate mapping (0.0 to 1.0, where 0.0 is no offset and 1.0 is a full screen height offset)
 DEADZONE = 0.05          # Normalized distance (0.0 to 1.0) of movement required to break deadzone
 # ==============================================================================
 
@@ -53,6 +53,14 @@ smoothed_y = None
 
 # Track mouse button click state
 is_clicking = False
+
+# Track enter key press state during dictation
+is_pressing_enter = False
+
+# Track dictation state
+is_dictating = False
+last_dictation_detected_time = 0
+last_dictation_toggled_time = 0
 
 def get_distance(p1, p2):
     return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
@@ -128,12 +136,14 @@ def on_pointing(x_norm, y_norm):
             smoothed_y = (real_y - v_y) / v_h
 
 def print_gesture(result, output_image, timestamp_ms):
-    global last_gesture, smoothed_x, smoothed_y, is_clicking
+    global last_gesture, smoothed_x, smoothed_y, is_clicking, is_dictating, is_pressing_enter, last_dictation_detected_time, last_dictation_toggled_time
     
     display_name = None
     track_index_tip = None
     has_left_fist = False
+    has_right_fist = False
     is_right_pointing = False
+    is_left_pointing_up = False
 
     if result.hand_landmarks and result.handedness:
         # Loop through all detected hands to identify states
@@ -154,6 +164,8 @@ def print_gesture(result, output_image, timestamp_ms):
                     current_hand_gesture = 'Closed Palm'
                     if is_left_hand:
                         has_left_fist = True
+                    elif is_right_hand:
+                        has_right_fist = True
 
             # Extract necessary landmarks
             thumb_tip = landmarks[4]
@@ -167,24 +179,38 @@ def print_gesture(result, output_image, timestamp_ms):
             pinky_tip = landmarks[20]
             pinky_mcp = landmarks[17]
 
+            # Common finger fold states
+            is_index_extended = get_distance(index_tip, wrist) > get_distance(index_mcp, wrist)
+            is_middle_folded = get_distance(middle_tip, wrist) < get_distance(middle_mcp, wrist)
+            is_ring_folded = get_distance(ring_tip, wrist) < get_distance(ring_mcp, wrist)
+            is_pinky_folded = get_distance(pinky_tip, wrist) < get_distance(pinky_mcp, wrist)
+
             # Check if this hand is pointing (Only allow RIGHT hand to point)
             if is_right_hand:
-                # We verify the index finger is physically extended (tip is further from wrist than the knuckle)
-                is_index_extended = get_distance(index_tip, wrist) > get_distance(index_mcp, wrist)
                 is_index_forward = index_tip.z < -0.05 and index_tip.z < index_mcp.z
-                is_middle_folded = get_distance(middle_tip, wrist) < get_distance(middle_mcp, wrist)
-                is_ring_folded = get_distance(ring_tip, wrist) < get_distance(ring_mcp, wrist)
-                is_pinky_folded = get_distance(pinky_tip, wrist) < get_distance(pinky_mcp, wrist)
 
                 # Prevent a recognized closed fist from accidentally being misclassified as pointing
                 if current_hand_gesture != 'Closed Palm' and is_index_extended and is_index_forward and is_middle_folded and is_ring_folded and is_pinky_folded:
                     current_hand_gesture = 'Pointing'
                     track_index_tip = index_tip
                     is_right_pointing = True
+                    
+            elif is_left_hand:
+                # Left hand uses "Pointing Up" for dictation
+                is_index_forward = index_tip.z < -0.05 and index_tip.z < index_mcp.z
+                # Pointing Up: y is smaller (higher in image), z is not deeply forward
+                is_index_up = index_tip.y < index_mcp.y and not is_index_forward
+                
+                # Make sure dictation "Pointing Up" gesture is cleanly detected
+                if current_hand_gesture != 'Closed Palm' and is_index_extended and is_index_up and is_middle_folded and is_ring_folded and is_pinky_folded:
+                    current_hand_gesture = 'Pointing Up'
+                    is_left_pointing_up = True
                 
             # If we don't have a primary display name yet or we found pointing (which is highest priority), update it
             if current_hand_gesture == 'Pointing':
                 display_name = 'Pointing'
+            elif current_hand_gesture == 'Pointing Up' and display_name != 'Pointing':
+                display_name = 'Pointing Up'
             elif not display_name and current_hand_gesture:
                 display_name = current_hand_gesture
 
@@ -205,6 +231,41 @@ def print_gesture(result, output_image, timestamp_ms):
         if is_clicking:
             is_clicking = False
 
+    # Process Dictation logic: Ensure pointing up enables microphone
+    current_time = time.time()
+    if is_left_pointing_up:
+        last_dictation_detected_time = current_time
+        
+        # Start dictation if not already dictating and at least 1s since last toggle to avoid OS spamming
+        if not is_dictating and (current_time - last_dictation_toggled_time > 1.0):
+            is_dictating = True
+            last_dictation_toggled_time = current_time
+            print("Action triggered: Dictation Started (Listening via Windows Native OS...)")
+            # Toggles on Native Windows Dictation (Realtime, high accuracy, types as you speak)
+            pyautogui.hotkey('win', 'h')
+            
+        # Process "Enter" logic: Ensure right hand is a fist while dictating
+        if has_right_fist and not is_pressing_enter:
+            is_pressing_enter = True
+            print("Action triggered: Enter Key Pressed (Right Hand Fist during Dictation)")
+            pyautogui.press('enter')
+        elif not has_right_fist and is_pressing_enter:
+            is_pressing_enter = False
+            
+    else:
+        # Buffer for tracking loss: Wait 0.6 seconds of NO gesture before stopping
+        if is_dictating and (current_time - last_dictation_detected_time > 0.6):
+            # Also ensure we don't rapid-fire hotkeys faster than Windows can physically open/close the overlay
+            if (current_time - last_dictation_toggled_time > 1.0):
+                is_dictating = False
+                last_dictation_toggled_time = current_time
+                print("Action triggered: Dictation Stopped")
+                # Turn it off again by re-toggling 
+                pyautogui.hotkey('win', 'h')
+            
+        if is_pressing_enter:
+            is_pressing_enter = False
+
     # For general gesture console spam prevention 
     if display_name and display_name != last_gesture:
         if display_name == 'Open Palm':
@@ -213,6 +274,8 @@ def print_gesture(result, output_image, timestamp_ms):
             on_closed_palm()
         elif display_name == 'Pointing':
             print("Action triggered: Pointing (Cursor Tracking)")
+        elif display_name == 'Pointing Up':
+            pass # Handled continuously above
             
         last_gesture = display_name
     elif not display_name:
@@ -230,6 +293,7 @@ options = GestureRecognizerOptions(
 
 def main():
     print("Starting webcam reader... (No UI will be shown. Press Ctrl+C in terminal to stop)")
+    
     cap = cv2.VideoCapture(0)
 
     if not cap.isOpened():
