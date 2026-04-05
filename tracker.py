@@ -77,6 +77,9 @@ is_dictating = False
 last_dictation_detected_time = 0
 last_dictation_toggled_time = 0
 
+# Track navigation state
+last_nav_command_time = 0
+
 def get_distance(p1, p2):
     return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
 
@@ -163,7 +166,7 @@ def on_pointing(mcp, tip):
             smoothed_y = (real_y - v_y) / v_h
 
 def print_gesture(result, output_image, timestamp_ms):
-    global last_gesture, smoothed_x, smoothed_y, is_clicking, is_dictating, is_pressing_enter, last_dictation_detected_time, last_dictation_toggled_time
+    global last_gesture, smoothed_x, smoothed_y, is_clicking, is_dictating, is_pressing_enter, last_dictation_detected_time, last_dictation_toggled_time, last_nav_command_time
     
     display_name = None
     track_index_tip = None
@@ -294,6 +297,20 @@ def print_gesture(result, output_image, timestamp_ms):
             
         if is_pressing_enter:
             is_pressing_enter = False
+
+    # Process Forward/Backward Navigation logic:
+    # Only if dictation and cursor tracking are strictly NOT active
+    if not is_dictating and not is_right_pointing:
+        # Rate limit navigation to avoid rapidly skipping multiple pages
+        if current_time - last_nav_command_time > COMMAND_COOLDOWN:
+            if has_right_fist:
+                print("Action triggered: Navigation Forward (Right Hand Fist)")
+                pyautogui.hotkey('browserforward') # Equivalent to Alt+Right
+                last_nav_command_time = current_time
+            elif has_left_fist:
+                print("Action triggered: Navigation Backward (Left Hand Fist)")
+                pyautogui.hotkey('browserback') # Equivalent to Alt+Left
+                last_nav_command_time = current_time
 
     # For general gesture console spam prevention 
     if display_name and display_name != last_gesture:

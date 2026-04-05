@@ -7,6 +7,7 @@ This application uses your webcam and Google's MediaPipe Machine Learning framew
 - **Left Hand Clicking**: Make a completely closed fist with your left hand to simulate a left mouse click (while pointing with your right hand).
 - **Left Hand Dictation**: Point your left index finger straight up to automatically toggle the Windows Native Dictation overlay (`Win + H`).
 - **In-Dictation Operations**: While dictating, make a closed fist with your right hand to press the `Enter` key.
+- **Forward/Backward Navigation**: When neither pointing nor dictating, make a closed fist with your right hand to navigate Forward (Browser Forward) or your left hand to navigate Backward (Browser Back).
 - **Hot-Reloadable Physics**: Tweak sensitivity, smoothing, and deadzones dynamically without restarting the script.
 
 ## System Requirements
