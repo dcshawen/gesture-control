@@ -196,7 +196,6 @@ export default function ConfigPanel() {
 
   const handleCommit = async (key, value, endpoint) => {
     try {
-      setStatus({ type: 'saving', message: 'Saving...' });
       const response = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -206,9 +205,6 @@ export default function ConfigPanel() {
       if (!response.ok) {
         throw new Error('Failed to save configuration');
       }
-      
-      setStatus({ type: 'success', message: 'Saved!' });
-      setTimeout(() => setStatus(null), 1500);
     } catch (err) {
       setStatus({ type: 'error', message: err.message });
       fetchConfig(); // Revert to server state on error
