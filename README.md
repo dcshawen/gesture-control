@@ -4,7 +4,7 @@ This application uses your webcam and Google's MediaPipe Machine Learning framew
 
 ## Features
 - **Right Hand Cursor Tracking**: Point at the screen with your right index finger to move the mouse.
-- **Right Hand Scrolling**: Hold an Open Palm to "grab" the screen and drag it around omni-directionally (like a touchscreen). 
+- **Right Hand Scrolling**: Hold an open palm with your right hand to "grab" and scroll the screen omni-directionally (like a touchscreen). Features "sticky edges" at the extremes of the camera view to naturally dampen bounces or accidental scrolls when exiting the gesture.
 - **Left Hand Clicking**: Make a completely closed fist with your left hand to simulate a left mouse click (while pointing with your right hand).
 - **Left Hand Dictation**: Point your left index finger straight up to automatically toggle the Windows Native Dictation overlay (`Win + H`).
 - **In-Dictation Operations**: While dictating, make a closed fist with your right hand to press the `Enter` key.
