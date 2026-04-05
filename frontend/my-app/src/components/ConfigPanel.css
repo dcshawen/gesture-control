@@ -56,12 +56,12 @@
 
 .config-panel-header h2 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: 36px;
 }
 
 .config-panel-subtitle {
   color: var(--text);
-  font-size: 14px;
+  font-size: 16px;
   margin-top: 12px;
 }
 
@@ -128,7 +128,7 @@
 .config-header label {
   font-weight: 600;
   color: var(--text-h);
-  font-size: 15px;
+  font-size: 17px;
 }
 
 .config-value {
