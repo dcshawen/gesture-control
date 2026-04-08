@@ -6,6 +6,7 @@ import urllib.request
 import pyautogui
 import ctypes
 import json
+import queue
 
 # ==============================================================================
 # CONFIGURATION OPTIONS (Defaults, dynamically overridden by config.json)
@@ -74,6 +75,9 @@ smoothed_y = None
 
 # Track mouse button click state
 is_clicking = False
+
+# Queue for sending frames to feed.py
+global_frame_queue = None
 
 # Track enter key press state during dictation
 is_pressing_enter = False
@@ -179,7 +183,7 @@ def on_pointing(mcp, tip):
             smoothed_y = (real_y - v_y) / v_h
 
 def print_gesture(result, output_image, timestamp_ms):
-    global last_gesture, smoothed_x, smoothed_y, is_clicking, is_dictating, is_pressing_enter, last_dictation_detected_time, last_dictation_toggled_time, last_nav_command_time, is_scrolling, scroll_anchor_x, scroll_anchor_y
+    global last_gesture, smoothed_x, smoothed_y, is_clicking, is_dictating, is_pressing_enter, last_dictation_detected_time, last_dictation_toggled_time, last_nav_command_time, is_scrolling, scroll_anchor_x, scroll_anchor_y, global_frame_queue
     
     display_name = None
     track_index_tip = None
@@ -409,6 +413,30 @@ def print_gesture(result, output_image, timestamp_ms):
         smoothed_x = None
         smoothed_y = None
 
+    if global_frame_queue is not None:
+        try:
+            annotated_image = output_image.numpy_view().copy()
+            import cv2
+            
+            # Map normalized coordinates back to pixel coordinates
+            h, w, c = annotated_image.shape
+            
+            if result.hand_landmarks:
+                for hand_landmarks in result.hand_landmarks:
+                    # Draw a simplified skeleton (just the dots for joints and fingertips)
+                    for landmark in hand_landmarks:
+                        cx, cy = int(landmark.x * w), int(landmark.y * h)
+                        if 0 <= cx < w and 0 <= cy < h:
+                            cv2.circle(annotated_image, (cx, cy), 5, (0, 255, 0), -1)
+
+            # Convert RGB back to BGR for OpenCV
+            bgr_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
+            global_frame_queue.put_nowait(bgr_image)
+        except queue.Full:
+            pass
+        except Exception as e:
+            pass
+
 # Create a gesture recognizer instance
 options = GestureRecognizerOptions(
     base_options=BaseOptions(model_asset_path=model_path),
@@ -417,8 +445,9 @@ options = GestureRecognizerOptions(
     result_callback=print_gesture
 )
 
-def main():
-    global is_dictating, last_dictation_detected_time, last_dictation_toggled_time
+def main_loop(frame_queue=None):
+    global is_dictating, last_dictation_detected_time, last_dictation_toggled_time, global_frame_queue
+    global_frame_queue = frame_queue
     
     print("Starting webcam reader... (No UI will be shown. Press Ctrl+C in terminal to stop)")
     
@@ -468,4 +497,4 @@ def main():
     cap.release()
 
 if __name__ == "__main__":
-    main()
+    main_loop()
